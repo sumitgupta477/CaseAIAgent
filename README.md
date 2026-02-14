@@ -21,3 +21,7 @@ Backend:
 6. Enable the stage on API Gateway and do autodeploy and enable the cors
 7. make sure to put the correct openAI key in the lambda code
 8. Make sure to install the npm dependencies for Backend\terraform_code\backend\submit.js file
+
+## System Architecture
+
+![Architecture](AI Case Agent_Architecture_Diagram.drawio.png)
