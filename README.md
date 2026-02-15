@@ -24,4 +24,5 @@ Backend:
 
 ## System Architecture
 
-![Architecture](AI Case Agent_Architecture_Diagram.drawio.png)
+![Architecture](Architecture_Diagram.drawio.png)
+
