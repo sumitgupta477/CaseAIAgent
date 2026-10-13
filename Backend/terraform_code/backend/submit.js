@@ -1,133 +1,156 @@
-const AWS = require("aws-sdk");
+// AI Case Agent: answers questions with an LLM and, when the message describes a
+// problem, opens a case in DynamoDB and emails the support team via SES.
+//
+// Configuration comes from environment variables set by Terraform; the OpenAI
+// API key is read from AWS Secrets Manager (never stored in code).
+
+const { randomUUID } = require("node:crypto");
+const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
+const { DynamoDBDocumentClient, PutCommand } = require("@aws-sdk/lib-dynamodb");
+const { SESClient, SendEmailCommand } = require("@aws-sdk/client-ses");
+const { SecretsManagerClient, GetSecretValueCommand } = require("@aws-sdk/client-secrets-manager");
 const OpenAI = require("openai");
 
-// ---------------- Hardcoded configuration ----------------
-const CASES_TABLE = "CasesTable";
-const SES_FROM = "sumitgupta477@gmail.com";
-const ADMIN_EMAIL = "sumitgupta477@gmail.com";
-const AWS_REGION = "us-east-1";
-const OPENAI_API_KEY = "<Add-Your-Open-Api-Key>";
+const {
+  CASES_TABLE,
+  SES_FROM,
+  ADMIN_EMAIL,
+  OPENAI_SECRET_ARN,
+  OPENAI_MODEL = "gpt-4o-mini",
+} = process.env;
 
-// AWS Clients
-const dynamo = new AWS.DynamoDB.DocumentClient({ region: AWS_REGION });
-const ses = new AWS.SES({ region: AWS_REGION });
+const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ses = new SESClient({});
+const secrets = new SecretsManagerClient({});
 
-// OpenAI client
-const openai = new OpenAI({
-  apiKey: OPENAI_API_KEY
-});
+const CASE_KEYWORDS = ["case", "issue", "problem", "ticket", "error", "broken", "outage"];
+const PRIORITIES = ["low", "normal", "high", "urgent"];
 
-// Lazy UUID generator
-async function getUuidV4() {
-  const { v4 } = await import("uuid");
-  return v4();
+const SYSTEM_PROMPT = `You are a helpful IT support agent.
+Reply to the user, and decide whether their message reports a problem that needs a support case.
+Respond ONLY with JSON: {"reply": string, "create_case": boolean, "priority": "low"|"normal"|"high"|"urgent", "summary": string}
+"summary" is a one-line title for the case (empty if no case is needed).`;
+
+// Cached across warm invocations.
+let openaiClient;
+
+async function getOpenAI() {
+  if (!openaiClient) {
+    const secret = await secrets.send(new GetSecretValueCommand({ SecretId: OPENAI_SECRET_ARN }));
+    openaiClient = new OpenAI({ apiKey: secret.SecretString });
+  }
+  return openaiClient;
 }
 
-// ---------------- Lambda Handler ----------------
 exports.handler = async (event) => {
+  let body;
   try {
-    // Parse JSON safely
-    let body = {};
-    try {
-      body = typeof event.body === "string" ? JSON.parse(event.body) : event.body || {};
-    } catch (err) {
-      return { statusCode: 400, body: JSON.stringify({ error: "Invalid JSON body" }) };
-    }
+    body = typeof event.body === "string" ? JSON.parse(event.body) : event.body || {};
+  } catch {
+    return respond(400, { error: "Invalid JSON body" });
+  }
 
-    const userText = body.message || body.inputText;
-    if (!userText) return reply("No message provided");
+  const userText = (body.message || body.inputText || "").trim();
+  if (!userText) return respond(400, { error: "No message provided" });
+  if (userText.length > 4000) return respond(400, { error: "Message is too long" });
 
-    // ---------------- AI Analysis (OpenAI) ----------------
+  try {
     const ai = await analyzeWithAI(userText);
 
-    // ---------------- Case Decision ----------------
-    const createCaseKeywords = ["case", "issue", "problem", "ticket"];
-    const shouldCreateCase = createCaseKeywords.some((keyword) =>
-      userText.toLowerCase().includes(keyword)
-    );
-
-    if (!shouldCreateCase) {
-      // No case: just return real AI reply
-      return reply(ai.reply);
+    if (!ai.create_case) {
+      return respond(200, { response: ai.reply });
     }
 
-    // ---------------- Create Case ----------------
-    const caseId = await getUuidV4();
     const item = {
-      case_id: caseId,
+      case_id: randomUUID(),
+      summary: ai.summary || userText.slice(0, 100),
       input: userText,
-      priority: body.priority || "normal",
+      priority: PRIORITIES.includes(body.priority) ? body.priority : ai.priority,
       user: body.user || "Anonymous",
+      status: "OPEN",
       created_at: new Date().toISOString(),
     };
 
-    // Save to DynamoDB
-    await dynamo.put({ TableName: CASES_TABLE, Item: item }).promise();
+    await dynamo.send(new PutCommand({ TableName: CASES_TABLE, Item: item }));
+    await sendEmail(item);
 
-    // Send Email
-    await sendEmail(caseId, item);
-
-    return reply(`Case created successfully: ${caseId}`);
+    return respond(200, {
+      response: `${ai.reply}\n\nCase created: ${item.case_id} (priority: ${item.priority})`,
+      case_id: item.case_id,
+    });
   } catch (err) {
-    console.error("Lambda Error:", err);
-    return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
+    // Full details go to CloudWatch Logs; callers get a generic message.
+    console.error("Lambda error:", err);
+    return respond(500, { error: "Something went wrong. Please try again." });
   }
 };
 
-/* ---------------- OpenAI AI ---------------- */
 async function analyzeWithAI(text) {
   try {
+    const openai = await getOpenAI();
     const resp = await openai.chat.completions.create({
-      model: "gpt-3.5-turbo",
+      model: OPENAI_MODEL,
+      response_format: { type: "json_object" },
       messages: [
-        { role: "user", content: text }
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: text },
       ],
-      max_tokens: 300,
+      max_tokens: 400,
     });
 
+    const parsed = JSON.parse(resp.choices[0].message.content);
     return {
-      reply: resp.choices[0].message.content.trim()
+      reply: String(parsed.reply || "").trim(),
+      create_case: Boolean(parsed.create_case),
+      priority: PRIORITIES.includes(parsed.priority) ? parsed.priority : "normal",
+      summary: String(parsed.summary || "").trim(),
     };
-
   } catch (err) {
-    console.error("OpenAI Error:", err);
-    return { reply: "Sorry, AI is temporarily unavailable." };
+    // If the LLM is unavailable, fall back to keyword detection so problems still get a case.
+    console.error("OpenAI error:", err);
+    const looksLikeProblem = CASE_KEYWORDS.some((k) => text.toLowerCase().includes(k));
+    return {
+      reply: looksLikeProblem
+        ? "Our AI assistant is temporarily unavailable, so we've logged your request for the support team."
+        : "Sorry, the AI assistant is temporarily unavailable. Please try again shortly.",
+      create_case: looksLikeProblem,
+      priority: "normal",
+      summary: "",
+    };
   }
 }
 
-/* ---------------- Email ---------------- */
-async function sendEmail(caseId, data) {
-  const emailBody = `
-A new case has been created.
+async function sendEmail(item) {
+  const text = [
+    "A new case has been created.",
+    "",
+    `Case ID:  ${item.case_id}`,
+    `Priority: ${item.priority}`,
+    `Summary:  ${item.summary}`,
+    `User:     ${item.user}`,
+    "",
+    "Message:",
+    item.input,
+    "",
+    `Created at: ${item.created_at}`,
+  ].join("\n");
 
-Case ID: ${caseId}
-Priority: ${data.priority}
-
-Message:
-${data.input}
-
-Created At:
-${data.created_at}
-`;
-
-  return ses.sendEmail({
-    Source: SES_FROM,
-    Destination: { ToAddresses: [ADMIN_EMAIL] },
-    Message: {
-      Subject: { Data: `Case created ${caseId}` },
-      Body: { Text: { Data: emailBody } },
-    },
-  }).promise();
+  await ses.send(
+    new SendEmailCommand({
+      Source: SES_FROM,
+      Destination: { ToAddresses: [ADMIN_EMAIL] },
+      Message: {
+        Subject: { Data: `[${item.priority.toUpperCase()}] Case ${item.case_id}: ${item.summary}`.slice(0, 200) },
+        Body: { Text: { Data: text } },
+      },
+    })
+  );
 }
 
-/* ---------------- Utils ---------------- */
-function reply(msg) {
+function respond(statusCode, body) {
   return {
-    statusCode: 200,
-    headers: {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-    },
-    body: JSON.stringify({ response: msg }),
+    statusCode,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   };
 }

@@ -1,0 +1,10 @@
+node_modules/
+.next/
+.env.local
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+Backend/terraform_code/build/
+*.zip

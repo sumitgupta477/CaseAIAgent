@@ -4,11 +4,9 @@ resource "aws_iam_role" "lambda_role" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect = "Allow"
-      Principal = {
-        Service = "lambda.amazonaws.com"
-      }
-      Action = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
     }]
   })
 }
@@ -19,33 +17,25 @@ resource "aws_iam_policy" "lambda_policy" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-
-      # Logs
       {
-        Effect = "Allow"
-        Action = ["logs:*"]
-        Resource = "*"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.api.arn}:*"
       },
-
-      # DynamoDB
       {
-        Effect = "Allow"
-        Action = ["dynamodb:PutItem"]
+        Effect   = "Allow"
+        Action   = ["dynamodb:PutItem"]
         Resource = aws_dynamodb_table.cases.arn
       },
-
-      # SES
       {
-        Effect = "Allow"
-        Action = ["ses:SendEmail"]
-        Resource = "*"
+        Effect   = "Allow"
+        Action   = ["ses:SendEmail"]
+        Resource = "arn:aws:ses:${var.aws_region}:${data.aws_caller_identity.current.account_id}:identity/*"
       },
-
-      # Bedrock
       {
-        Effect = "Allow"
-        Action = ["bedrock:InvokeModel"]
-        Resource = "*"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = aws_secretsmanager_secret.openai_api_key.arn
       }
     ]
   })
