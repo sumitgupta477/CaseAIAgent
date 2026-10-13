@@ -6,10 +6,15 @@ export default function Home() {
   const [response, setResponse] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const API_URL = "https://6g05kvxgm9.execute-api.us-east-1.amazonaws.com/prod/submit";
+  // Set NEXT_PUBLIC_API_URL to the `api_url` Terraform output (in .env.local or Vercel project settings).
+  const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!API_URL) {
+      setResponse("Error: NEXT_PUBLIC_API_URL is not configured");
+      return;
+    }
     setLoading(true);
     setResponse("");
 
