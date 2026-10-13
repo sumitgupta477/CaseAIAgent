@@ -36,7 +36,7 @@ export default function Home() {
 
   return (
     <div style={{ maxWidth: 600, margin: "50px auto", fontFamily: "Arial" }}>
-      <h1>Morgan Stanley AI Agent - Hackathon POC # 17 (Create/Dispatch Case - For creating a case - include "case"/"problem"/"ticket"/"issue" in the prompt)</h1>
+      <h1>AI Case Agent</h1>
       <form onSubmit={handleSubmit}>
         <textarea
           placeholder="Enter your message..."
