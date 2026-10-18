@@ -22,6 +22,19 @@ An LLM-powered support agent that answers user questions and **automatically ope
 - Least-privilege IAM, API throttling to cap LLM spend, CORS restricted to your frontend
 - Infrastructure as code with Terraform
 
+## Design decisions
+
+| Decision | Why |
+|---|---|
+| **Structured JSON output** for the case decision | The Lambda can act on `create_case` and `priority` directly instead of parsing free text, so ticket creation is reliable. |
+| **Keyword fallback** when the LLM fails | An outage at the model provider never means a lost problem report. |
+| **API throttling (5 req/s, burst 10)** and `max_tokens: 400` | Caps the worst-case LLM bill if the public endpoint is abused. |
+| **DynamoDB on-demand** | No capacity planning, and zero cost when idle. |
+
+## Cost
+
+Almost all cost is LLM tokens: each message is one OpenAI call with at most 400 output tokens. Lambda, API Gateway, DynamoDB on-demand and SES cost pennies at demo scale, and nothing is billed while idle apart from the Secrets Manager secret (a fixed small monthly fee).
+
 ## Deploy the backend
 
 Prerequisites: an AWS account, AWS CLI configured for `us-east-1`, Terraform ≥ 1.5, Node.js 20.
