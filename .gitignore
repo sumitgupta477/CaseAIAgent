@@ -8,3 +8,6 @@ node_modules/
 *.tfvars
 Backend/terraform_code/build/
 *.zip
+
+# LLM eval run outputs (the baseline itself is committed)
+evals/results/

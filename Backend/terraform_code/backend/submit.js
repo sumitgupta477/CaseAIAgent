@@ -10,6 +10,7 @@ const { DynamoDBDocumentClient, PutCommand } = require("@aws-sdk/lib-dynamodb");
 const { SESClient, SendEmailCommand } = require("@aws-sdk/client-ses");
 const { SecretsManagerClient, GetSecretValueCommand } = require("@aws-sdk/client-secrets-manager");
 const OpenAI = require("openai");
+const { PRIORITIES, analyze, keywordFallback } = require("./agent");
 
 const {
   CASES_TABLE,
@@ -22,14 +23,6 @@ const {
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ses = new SESClient({});
 const secrets = new SecretsManagerClient({});
-
-const CASE_KEYWORDS = ["case", "issue", "problem", "ticket", "error", "broken", "outage"];
-const PRIORITIES = ["low", "normal", "high", "urgent"];
-
-const SYSTEM_PROMPT = `You are a helpful IT support agent.
-Reply to the user, and decide whether their message reports a problem that needs a support case.
-Respond ONLY with JSON: {"reply": string, "create_case": boolean, "priority": "low"|"normal"|"high"|"urgent", "summary": string}
-"summary" is a one-line title for the case (empty if no case is needed).`;
 
 // Cached across warm invocations.
 let openaiClient;
@@ -88,35 +81,12 @@ exports.handler = async (event) => {
 async function analyzeWithAI(text) {
   try {
     const openai = await getOpenAI();
-    const resp = await openai.chat.completions.create({
-      model: OPENAI_MODEL,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: text },
-      ],
-      max_tokens: 400,
-    });
-
-    const parsed = JSON.parse(resp.choices[0].message.content);
-    return {
-      reply: String(parsed.reply || "").trim(),
-      create_case: Boolean(parsed.create_case),
-      priority: PRIORITIES.includes(parsed.priority) ? parsed.priority : "normal",
-      summary: String(parsed.summary || "").trim(),
-    };
+    const { decision } = await analyze(openai, OPENAI_MODEL, text);
+    return decision;
   } catch (err) {
     // If the LLM is unavailable, fall back to keyword detection so problems still get a case.
     console.error("OpenAI error:", err);
-    const looksLikeProblem = CASE_KEYWORDS.some((k) => text.toLowerCase().includes(k));
-    return {
-      reply: looksLikeProblem
-        ? "Our AI assistant is temporarily unavailable, so we've logged your request for the support team."
-        : "Sorry, the AI assistant is temporarily unavailable. Please try again shortly.",
-      create_case: looksLikeProblem,
-      priority: "normal",
-      summary: "",
-    };
+    return keywordFallback(text);
   }
 }
 

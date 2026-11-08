@@ -21,6 +21,7 @@ An LLM-powered support agent that answers user questions and **automatically ope
 - Secret management: the OpenAI key lives in AWS Secrets Manager; no keys or emails in source code
 - Least-privilege IAM, API throttling to cap LLM spend, CORS restricted to your frontend
 - Infrastructure as code with Terraform
+- LLM evaluation with drift detection: a golden dataset, LLM-as-a-judge scoring and a CI check against a saved baseline (see [LLM evaluation](#llm-evaluation-and-drift-detection))
 
 ## Design decisions
 
@@ -30,6 +31,10 @@ An LLM-powered support agent that answers user questions and **automatically ope
 | **Keyword fallback** when the LLM fails | An outage at the model provider never means a lost problem report. |
 | **API throttling (5 req/s, burst 10)** and `max_tokens: 400` | Caps the worst-case LLM bill if the public endpoint is abused. |
 | **DynamoDB on-demand** | No capacity planning, and zero cost when idle. |
+
+## LLM evaluation and drift detection
+
+The [`evals/`](evals/) suite runs the production prompt over 24 test messages and scores case decisions, priority, case titles and reply quality (LLM-as-a-judge with promptfoo). `drift_check.py` compares each run with a committed baseline and fails if any score drops by more than 0.05. GitHub Actions runs it on every pull request that touches the agent and weekly, to catch silent model updates. See [evals/README.md](evals/README.md).
 
 ## Cost
 

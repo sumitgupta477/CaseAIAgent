@@ -1,0 +1,77 @@
+# Runs the LLM regression eval and fails if quality drifts from evals/baseline.json.
+#
+# - On pull requests that touch the agent or the eval: catches regressions from
+#   prompt or code changes before they merge.
+# - Weekly: catches drift with no code change at all, e.g. the model provider
+#   silently updating the model behind the same name.
+#
+# Needs the OPENAI_API_KEY repository secret (Settings > Secrets and variables > Actions).
+
+name: LLM eval drift check
+
+on:
+  pull_request:
+    paths:
+      - "Backend/terraform_code/backend/**"
+      - "evals/**"
+      - ".github/workflows/llm-eval-drift.yml"
+  schedule:
+    - cron: "17 9 * * 1" # Mondays 09:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: llm-eval-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      PROMPTFOO_VERSION: "0.125.1"
+      PROMPTFOO_DISABLE_TELEMETRY: "1"
+      PROMPTFOO_DISABLE_UPDATE: "1"
+      # Let drift_check.py decide pass/fail instead of promptfoo's own exit code.
+      PROMPTFOO_FAILED_TEST_EXIT_CODE: "0"
+    steps:
+      - name: Skip when the API key is unavailable
+        if: env.OPENAI_API_KEY == ''
+        run: echo "::warning::OPENAI_API_KEY secret is not set (or this is a fork PR); skipping the LLM eval."
+
+      - uses: actions/checkout@v4
+        if: env.OPENAI_API_KEY != ''
+
+      - uses: actions/setup-node@v4
+        if: env.OPENAI_API_KEY != ''
+        with:
+          node-version: "20"
+
+      - name: Install backend dependencies
+        if: env.OPENAI_API_KEY != ''
+        working-directory: Backend/terraform_code/backend
+        run: npm ci
+
+      - name: Run eval (3 repeats to average out model randomness)
+        if: env.OPENAI_API_KEY != ''
+        run: |
+          mkdir -p evals/results
+          npx -y "promptfoo@${PROMPTFOO_VERSION}" eval \
+            -c evals/promptfooconfig.yaml \
+            --repeat 3 --no-cache --no-table \
+            -o evals/results/latest.json
+
+      - name: Compare with baseline
+        if: env.OPENAI_API_KEY != ''
+        run: python3 evals/drift_check.py evals/results/latest.json
+
+      - name: Upload results
+        if: always() && env.OPENAI_API_KEY != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-eval-results
+          path: evals/results/latest.json
+          if-no-files-found: ignore
