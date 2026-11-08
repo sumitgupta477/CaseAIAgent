@@ -52,6 +52,27 @@ git add evals/baseline.json   # review the score changes in the PR
 
 Until `baseline.json` exists, the check prints a warning and passes.
 
+## CloudWatch alerts
+
+Scheduled and manual runs can publish every score, plus a `DriftDetected` metric (1 or 0), to CloudWatch namespace `LLMEval/CaseAIAgent`. [`Backend/terraform_code/eval_monitoring.tf`](../Backend/terraform_code/eval_monitoring.tf) creates:
+
+- an **alarm** that fires when a run detects drift, and notifies an **SNS topic** (email, or Slack/PagerDuty subscribed to the topic)
+- a **dashboard** with each score, error rate and latency over time
+- an **IAM role** that GitHub Actions assumes through OIDC, allowed only `PutMetricData` in that namespace
+
+Setup:
+
+```bash
+cd Backend/terraform_code
+terraform apply -var admin_email=... -var ses_from_email=... \
+  -var eval_alert_email=you@example.com   # confirm the email AWS sends you
+terraform output -raw eval_role_arn       # save as the AWS_EVAL_ROLE_ARN GitHub secret
+```
+
+Pull request runs are never published, so unmerged changes can't set off the alarm. If your AWS account already has a GitHub OIDC provider, add `-var create_github_oidc_provider=false`.
+
+To publish from your own machine: `python3 evals/drift_check.py evals/results/latest.json --cloudwatch-namespace LLMEval/CaseAIAgent` (uses boto3 if installed, otherwise the AWS CLI).
+
 ## Configuration
 
 | Setting | Default | How to change |

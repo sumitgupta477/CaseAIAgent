@@ -34,7 +34,7 @@ An LLM-powered support agent that answers user questions and **automatically ope
 
 ## LLM evaluation and drift detection
 
-The [`evals/`](evals/) suite runs the production prompt over 24 test messages and scores case decisions, priority, case titles and reply quality (LLM-as-a-judge with promptfoo). `drift_check.py` compares each run with a committed baseline and fails if any score drops by more than 0.05. GitHub Actions runs it on every pull request that touches the agent and weekly, to catch silent model updates. See [evals/README.md](evals/README.md).
+The [`evals/`](evals/) suite runs the production prompt over 24 test messages and scores case decisions, priority, case titles and reply quality (LLM-as-a-judge with promptfoo). `drift_check.py` compares each run with a committed baseline and fails if any score drops by more than 0.05. Scores also go to CloudWatch, where an alarm notifies an SNS topic on drift. GitHub Actions runs it on every pull request that touches the agent and weekly, to catch silent model updates. See [evals/README.md](evals/README.md).
 
 ## Cost
 

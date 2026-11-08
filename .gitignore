@@ -11,3 +11,4 @@ Backend/terraform_code/build/
 
 # LLM eval run outputs (the baseline itself is committed)
 evals/results/
+__pycache__/
