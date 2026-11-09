@@ -271,6 +271,12 @@ def main():
     data, rows = load_results(args.results)
     current = summarize(data, rows)
 
+    errors = sorted({str(r.get("error"))[:300] for r in rows if is_error(r)})
+    if errors:
+        print(f"warning: {sum(is_error(r) for r in rows)} of {len(rows)} results failed with errors. Examples:")
+        for e in errors[:3]:
+            print(f"  - {e}")
+
     if args.update_baseline:
         with open(args.baseline, "w", encoding="utf-8") as f:
             json.dump(current, f, indent=2, sort_keys=True)
