@@ -107,6 +107,8 @@ def summarize(data, rows):
         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "fingerprint": {
             "providers": providers,
+            "models": sorted({str(((r.get("response") or {}).get("metadata") or {}).get("model"))
+                              for r in rows if ((r.get("response") or {}).get("metadata") or {}).get("model")}),
             "grader": grader,
             "promptfoo_version": meta.get("promptfooVersion"),
         },
@@ -188,7 +190,7 @@ def compare(baseline, current, tolerance, latency_tolerance, token_tolerance, fa
         warnings.append(f"{len(removed)} baseline test(s) missing from this run.")
 
     bf, cf = baseline.get("fingerprint", {}), current.get("fingerprint", {})
-    for field in ("providers", "grader", "promptfoo_version"):
+    for field in ("providers", "models", "grader", "promptfoo_version"):
         if bf.get(field) != cf.get(field):
             warnings.append(f"{field} changed from `{bf.get(field)}` to `{cf.get(field)}`; "
                             "score changes may come from that rather than from the app. "

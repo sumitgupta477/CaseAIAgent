@@ -67,6 +67,9 @@ jobs:
               echo "OPENAI_BASE_URL=http://localhost:11434/v1"
               echo "OPENAI_MODEL=qwen2.5:3b"
               echo "EVAL_GRADER=ollama:chat:qwen2.5:3b"
+              # Deterministic answers, and a wider tolerance for a small judge model.
+              echo "LLM_TEMPERATURE=0"
+              echo "EVAL_TOLERANCE=0.1"
               # CPU inference: one request at a time.
               echo "EVAL_ARGS=--repeat 1 --max-concurrency 1"
             } >> "$GITHUB_ENV"
@@ -107,7 +110,7 @@ jobs:
           if [ "$PUBLISH_TO_CLOUDWATCH" = "true" ]; then
             export EVAL_CLOUDWATCH_NAMESPACE="LLMEval/CaseAIAgent"
           fi
-          python3 evals/drift_check.py evals/results/latest.json
+          python3 evals/drift_check.py evals/results/latest.json --tolerance "${EVAL_TOLERANCE:-0.05}"
 
       - name: Print a candidate baseline (first run only)
         if: hashFiles('evals/baseline.json') == ''

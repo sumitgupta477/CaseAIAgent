@@ -25,6 +25,9 @@ async function analyze(openai, model, text) {
       { role: "user", content: text },
     ],
     max_tokens: 400,
+    // Unset in production (provider default). The eval sets LLM_TEMPERATURE=0
+    // for small local models so repeated runs are comparable.
+    ...(process.env.LLM_TEMPERATURE ? { temperature: Number(process.env.LLM_TEMPERATURE) } : {}),
   });
 
   const content = resp?.choices?.[0]?.message?.content;
