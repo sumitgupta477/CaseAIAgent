@@ -27,7 +27,11 @@ async function analyze(openai, model, text) {
     max_tokens: 400,
   });
 
-  const parsed = JSON.parse(resp.choices[0].message.content);
+  const content = resp?.choices?.[0]?.message?.content;
+  if (typeof content !== "string") {
+    throw new Error(`Unexpected model response: ${JSON.stringify(resp).slice(0, 300)}`);
+  }
+  const parsed = JSON.parse(content);
   return {
     decision: {
       reply: String(parsed.reply || "").trim(),
