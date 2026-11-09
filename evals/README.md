@@ -29,7 +29,7 @@ The CI workflow (`.github/workflows/llm-eval-drift.yml`) runs this on pull reque
 
 ## Run it locally
 
-Requirements: Node.js 20+, Python 3.9+, an OpenAI API key.
+Requirements: Node.js 22+ (promptfoo needs it), Python 3.9+, an OpenAI API key.
 
 ```bash
 cd Backend/terraform_code/backend && npm ci && cd -
