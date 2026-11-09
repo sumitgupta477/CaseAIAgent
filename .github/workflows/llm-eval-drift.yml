@@ -73,12 +73,15 @@ jobs:
           fi
 
       - name: TEMP diagnose GitHub Models endpoint
+        env:
+          GH_MODELS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          curl -sS -o /tmp/out.txt -w "status=%{http_code}\n" -X POST "${OPENAI_BASE_URL:-https://models.github.ai/inference}/chat/completions" \
-            -H "Authorization: Bearer $OPENAI_API_KEY" -H "Content-Type: application/json" \
-            -d '{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"Reply with the JSON {\"ok\":true}"}],"response_format":{"type":"json_object"},"max_tokens":20}'
-          head -c 400 /tmp/out.txt; echo
-          node -e "const O=require('./Backend/terraform_code/backend/node_modules/openai');const c=new O.default();console.log('sdk baseURL:',c.baseURL)" || true
+          BODY='{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"Say hi"}],"max_tokens":10}'
+          try() { echo "== $1"; curl -sS -o /tmp/o.txt -w "status=%{http_code} type=%{content_type}\n" -X POST "$2" -H "Authorization: Bearer $GH_MODELS_TOKEN" -H "Content-Type: application/json" "${@:3}" -d "$BODY"; head -c 300 /tmp/o.txt; echo; }
+          try plain https://models.github.ai/inference/chat/completions
+          try versioned https://models.github.ai/inference/chat/completions -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2026-03-10"
+          try azure https://models.inference.ai.azure.com/chat/completions
+          echo "== catalog"; curl -sS -o /tmp/c.txt -w "status=%{http_code}\n" https://models.github.ai/catalog/models -H "Authorization: Bearer $GH_MODELS_TOKEN"; head -c 300 /tmp/c.txt; echo
 
       - uses: actions/setup-node@v4
         with:
