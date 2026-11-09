@@ -7,9 +7,10 @@
 #
 # Model access, in order of preference:
 #   1. OPENAI_API_KEY repository secret: calls OpenAI directly, like the Lambda.
-#   2. No secret: uses GitHub Models (free, OpenAI-compatible) with the
-#      workflow's own GITHUB_TOKEN, so the eval runs with zero setup.
-#      Free-tier rate limits apply, so it runs each test once, one at a time.
+#   2. No secret: runs a small open model (Qwen 2.5 3B) on the runner with
+#      Ollama, through its OpenAI-compatible API. Free and needs no setup,
+#      but scores reflect that model, not the production one, so keep a
+#      separate baseline per setup (the fingerprint check warns on a mismatch).
 # Optional: the AWS_EVAL_ROLE_ARN secret (the eval_role_arn Terraform output)
 # publishes scheduled and manual runs to CloudWatch, where an alarm emails you
 # on drift. Pull request runs are never published, so unmerged changes can't
@@ -29,7 +30,6 @@ on:
 
 permissions:
   contents: read
-  models: read # GitHub Models, used when no OPENAI_API_KEY secret is set
   id-token: write # for AWS OIDC (CloudWatch publishing)
 
 concurrency:
@@ -39,7 +39,7 @@ concurrency:
 jobs:
   eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       AWS_EVAL_ROLE_ARN: ${{ secrets.AWS_EVAL_ROLE_ARN }}
@@ -54,34 +54,31 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Choose the model endpoint
-        env:
-          GH_MODELS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ -n "$OPENAI_API_KEY" ]; then
             echo "Using the OpenAI API (OPENAI_API_KEY secret)."
             echo "EVAL_ARGS=--repeat 3" >> "$GITHUB_ENV"
+            echo "USE_OLLAMA=false" >> "$GITHUB_ENV"
           else
-            echo "::notice::No OPENAI_API_KEY secret; using GitHub Models (gpt-4o-mini) with GITHUB_TOKEN."
+            echo "::notice::No OPENAI_API_KEY secret; running the eval against a local Qwen 2.5 3B model with Ollama."
             {
-              echo "OPENAI_API_KEY=$GH_MODELS_TOKEN"
-              echo "OPENAI_BASE_URL=https://models.github.ai/inference"
-              echo "OPENAI_MODEL=openai/gpt-4o-mini"
-              echo "EVAL_GRADER=openai:chat:openai/gpt-4o-mini"
-              # Free tier: about 15 requests a minute, so one at a time with a pause.
-              echo "EVAL_ARGS=--repeat 1 --max-concurrency 1 --delay 4500"
+              echo "USE_OLLAMA=true"
+              echo "OPENAI_API_KEY=ollama"
+              echo "OPENAI_BASE_URL=http://localhost:11434/v1"
+              echo "OPENAI_MODEL=qwen2.5:3b"
+              echo "EVAL_GRADER=ollama:chat:qwen2.5:3b"
+              # CPU inference: one request at a time.
+              echo "EVAL_ARGS=--repeat 1 --max-concurrency 1"
             } >> "$GITHUB_ENV"
           fi
 
-      - name: TEMP diagnose GitHub Models endpoint
-        env:
-          GH_MODELS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Start Ollama with the local model
+        if: env.USE_OLLAMA == 'true'
         run: |
-          BODY='{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"Say hi"}],"max_tokens":10}'
-          try() { echo "== $1"; curl -sS -o /tmp/o.txt -w "status=%{http_code} type=%{content_type}\n" -X POST "$2" -H "Authorization: Bearer $GH_MODELS_TOKEN" -H "Content-Type: application/json" "${@:3}" -d "$BODY"; head -c 300 /tmp/o.txt; echo; }
-          try plain https://models.github.ai/inference/chat/completions
-          try versioned https://models.github.ai/inference/chat/completions -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2026-03-10"
-          try azure https://models.inference.ai.azure.com/chat/completions
-          echo "== catalog"; curl -sS -o /tmp/c.txt -w "status=%{http_code}\n" https://models.github.ai/catalog/models -H "Authorization: Bearer $GH_MODELS_TOKEN"; head -c 300 /tmp/c.txt; echo
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://localhost:11434/api/version && break; sleep 2; done
+          ollama pull qwen2.5:3b
 
       - uses: actions/setup-node@v4
         with:
