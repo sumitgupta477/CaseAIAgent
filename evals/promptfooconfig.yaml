@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+#
+# Regression eval for the AI Case Agent. Runs the production prompt
+# (Backend/terraform_code/backend/agent.js) over a golden dataset and scores:
+#   valid_json     - the model returned parseable JSON
+#   case_decision  - opened a case exactly when it should
+#   priority       - picked an acceptable priority (case tests only)
+#   summary        - wrote a short one-line case title (case tests only)
+#   reply_quality  - LLM-as-a-judge score of the reply against a rubric
+#
+# drift_check.py compares these scores with evals/baseline.json.
+
+description: AI Case Agent - case decisions and reply quality
+
+prompts:
+  - "{{message}}"
+
+providers:
+  - id: file://provider.js
+    label: case-agent
+
+defaultTest:
+  options:
+    # Pin the judge model: if the grader changes, scores can shift for
+    # reasons unrelated to the agent. Override with EVAL_GRADER.
+    provider: "{{ env.EVAL_GRADER or 'openai:chat:gpt-4o' }}"
+  assert:
+    - type: is-json
+      metric: valid_json
+    - type: javascript
+      metric: case_decision
+      value: JSON.parse(output).create_case === context.vars.expect_case
+    - type: llm-rubric
+      metric: reply_quality
+      # Grade only the reply text, not the JSON wrapper.
+      transform: JSON.parse(output).reply
+      value: "{{reply_rubric}}"
+
+tests: file://tests.yaml
+
+evaluateOptions:
+  maxConcurrency: 4
