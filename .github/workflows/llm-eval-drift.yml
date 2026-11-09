@@ -72,6 +72,14 @@ jobs:
             } >> "$GITHUB_ENV"
           fi
 
+      - name: TEMP diagnose GitHub Models endpoint
+        run: |
+          curl -sS -o /tmp/out.txt -w "status=%{http_code}\n" -X POST "${OPENAI_BASE_URL:-https://models.github.ai/inference}/chat/completions" \
+            -H "Authorization: Bearer $OPENAI_API_KEY" -H "Content-Type: application/json" \
+            -d '{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"Reply with the JSON {\"ok\":true}"}],"response_format":{"type":"json_object"},"max_tokens":20}'
+          head -c 400 /tmp/out.txt; echo
+          node -e "const O=require('./Backend/terraform_code/backend/node_modules/openai');const c=new O.default();console.log('sdk baseURL:',c.baseURL)" || true
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
