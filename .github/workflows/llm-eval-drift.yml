@@ -5,7 +5,11 @@
 # - Weekly: catches drift with no code change at all, e.g. the model provider
 #   silently updating the model behind the same name.
 #
-# Needs the OPENAI_API_KEY repository secret (Settings > Secrets and variables > Actions).
+# Model access, in order of preference:
+#   1. OPENAI_API_KEY repository secret: calls OpenAI directly, like the Lambda.
+#   2. No secret: uses GitHub Models (free, OpenAI-compatible) with the
+#      workflow's own GITHUB_TOKEN, so the eval runs with zero setup.
+#      Free-tier rate limits apply, so it runs each test once, one at a time.
 # Optional: the AWS_EVAL_ROLE_ARN secret (the eval_role_arn Terraform output)
 # publishes scheduled and manual runs to CloudWatch, where an alarm emails you
 # on drift. Pull request runs are never published, so unmerged changes can't
@@ -25,6 +29,7 @@ on:
 
 permissions:
   contents: read
+  models: read # GitHub Models, used when no OPENAI_API_KEY secret is set
   id-token: write # for AWS OIDC (CloudWatch publishing)
 
 concurrency:
@@ -34,7 +39,7 @@ concurrency:
 jobs:
   eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       AWS_EVAL_ROLE_ARN: ${{ secrets.AWS_EVAL_ROLE_ARN }}
@@ -46,48 +51,67 @@ jobs:
       # Let drift_check.py decide pass/fail instead of promptfoo's own exit code.
       PROMPTFOO_FAILED_TEST_EXIT_CODE: "0"
     steps:
-      - name: Skip when the API key is unavailable
-        if: env.OPENAI_API_KEY == ''
-        run: echo "::warning::OPENAI_API_KEY secret is not set (or this is a fork PR); skipping the LLM eval."
-
       - uses: actions/checkout@v4
-        if: env.OPENAI_API_KEY != ''
+
+      - name: Choose the model endpoint
+        env:
+          GH_MODELS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -n "$OPENAI_API_KEY" ]; then
+            echo "Using the OpenAI API (OPENAI_API_KEY secret)."
+            echo "EVAL_ARGS=--repeat 3" >> "$GITHUB_ENV"
+          else
+            echo "::notice::No OPENAI_API_KEY secret; using GitHub Models (gpt-4o-mini) with GITHUB_TOKEN."
+            {
+              echo "OPENAI_API_KEY=$GH_MODELS_TOKEN"
+              echo "OPENAI_BASE_URL=https://models.github.ai/inference"
+              echo "OPENAI_MODEL=openai/gpt-4o-mini"
+              echo "EVAL_GRADER=openai:chat:openai/gpt-4o-mini"
+              # Free tier: about 15 requests a minute, so one at a time with a pause.
+              echo "EVAL_ARGS=--repeat 1 --max-concurrency 1 --delay 4500"
+            } >> "$GITHUB_ENV"
+          fi
 
       - uses: actions/setup-node@v4
-        if: env.OPENAI_API_KEY != ''
         with:
           node-version: "20"
 
       - uses: aws-actions/configure-aws-credentials@v4
-        if: env.OPENAI_API_KEY != '' && env.PUBLISH_TO_CLOUDWATCH == 'true'
+        if: env.PUBLISH_TO_CLOUDWATCH == 'true'
         with:
           role-to-assume: ${{ env.AWS_EVAL_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Install backend dependencies
-        if: env.OPENAI_API_KEY != ''
         working-directory: Backend/terraform_code/backend
         run: npm ci
 
-      - name: Run eval (3 repeats to average out model randomness)
-        if: env.OPENAI_API_KEY != ''
+      - name: Run eval
         run: |
           mkdir -p evals/results
           npx -y "promptfoo@${PROMPTFOO_VERSION}" eval \
             -c evals/promptfooconfig.yaml \
-            --repeat 3 --no-cache --no-table \
+            $EVAL_ARGS --no-cache --no-table \
             -o evals/results/latest.json
 
       - name: Compare with baseline
-        if: env.OPENAI_API_KEY != ''
         run: |
           if [ "$PUBLISH_TO_CLOUDWATCH" = "true" ]; then
             export EVAL_CLOUDWATCH_NAMESPACE="LLMEval/CaseAIAgent"
           fi
           python3 evals/drift_check.py evals/results/latest.json
 
+      - name: Print a candidate baseline (first run only)
+        if: hashFiles('evals/baseline.json') == ''
+        run: |
+          python3 evals/drift_check.py evals/results/latest.json \
+            --update-baseline --baseline /tmp/baseline.json
+          echo "----- BEGIN CANDIDATE BASELINE -----"
+          cat /tmp/baseline.json
+          echo "----- END CANDIDATE BASELINE -----"
+
       - name: Upload results
-        if: always() && env.OPENAI_API_KEY != ''
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: llm-eval-results
