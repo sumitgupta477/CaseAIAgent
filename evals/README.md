@@ -17,6 +17,12 @@ The eval runs the **production prompt and parsing** (`Backend/terraform_code/bac
 
 Latency and tokens per call are tracked too, as warnings.
 
+## Current baseline
+
+`baseline.json` was recorded in GitHub Actions on 9 Nov 2026 with **no OpenAI key**: the agent and the judge ran on **Qwen 2.5 3B** (Ollama, on the runner, temperature 0). It proves the pipeline end to end and catches regressions in that setup. Scores: case_decision 0.96, valid_json 1.00, summary 0.94, reply_quality 0.83, priority 0.75, pass rate 0.67. The small model mostly misses priorities and the prompt-injection tests.
+
+When you add an `OPENAI_API_KEY` secret, the workflow switches to gpt-4o-mini and warns that the model differs from the baseline. Re-baseline from that run so drift is measured against the production model.
+
 ## How drift detection works
 
 1. **Baseline:** run the eval once on a known-good version and save the scores to `baseline.json` (committed, so every change to it is reviewed in a PR).
@@ -29,7 +35,7 @@ The CI workflow (`.github/workflows/llm-eval-drift.yml`) runs this on pull reque
 
 ## Run it locally
 
-Requirements: Node.js 20+, Python 3.9+, an OpenAI API key.
+Requirements: Node.js 22+ (promptfoo needs it), Python 3.9+, and an OpenAI API key, or [Ollama](https://ollama.com) with `qwen2.5:3b` (set `OPENAI_BASE_URL=http://localhost:11434/v1`, `OPENAI_API_KEY=ollama`, `OPENAI_MODEL=qwen2.5:3b`, `EVAL_GRADER=ollama:chat:qwen2.5:3b`, `LLM_TEMPERATURE=0`).
 
 ```bash
 cd Backend/terraform_code/backend && npm ci && cd -

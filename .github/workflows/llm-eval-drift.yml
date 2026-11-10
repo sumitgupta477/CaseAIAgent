@@ -5,7 +5,12 @@
 # - Weekly: catches drift with no code change at all, e.g. the model provider
 #   silently updating the model behind the same name.
 #
-# Needs the OPENAI_API_KEY repository secret (Settings > Secrets and variables > Actions).
+# Model access, in order of preference:
+#   1. OPENAI_API_KEY repository secret: calls OpenAI directly, like the Lambda.
+#   2. No secret: runs a small open model (Qwen 2.5 3B) on the runner with
+#      Ollama, through its OpenAI-compatible API. Free and needs no setup,
+#      but scores reflect that model, not the production one, so keep a
+#      separate baseline per setup (the fingerprint check warns on a mismatch).
 # Optional: the AWS_EVAL_ROLE_ARN secret (the eval_role_arn Terraform output)
 # publishes scheduled and manual runs to CloudWatch, where an alarm emails you
 # on drift. Pull request runs are never published, so unmerged changes can't
@@ -34,7 +39,7 @@ concurrency:
 jobs:
   eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       AWS_EVAL_ROLE_ARN: ${{ secrets.AWS_EVAL_ROLE_ARN }}
@@ -46,48 +51,78 @@ jobs:
       # Let drift_check.py decide pass/fail instead of promptfoo's own exit code.
       PROMPTFOO_FAILED_TEST_EXIT_CODE: "0"
     steps:
-      - name: Skip when the API key is unavailable
-        if: env.OPENAI_API_KEY == ''
-        run: echo "::warning::OPENAI_API_KEY secret is not set (or this is a fork PR); skipping the LLM eval."
-
       - uses: actions/checkout@v4
-        if: env.OPENAI_API_KEY != ''
+
+      - name: Choose the model endpoint
+        run: |
+          if [ -n "$OPENAI_API_KEY" ]; then
+            echo "Using the OpenAI API (OPENAI_API_KEY secret)."
+            echo "EVAL_ARGS=--repeat 3" >> "$GITHUB_ENV"
+            echo "USE_OLLAMA=false" >> "$GITHUB_ENV"
+          else
+            echo "::notice::No OPENAI_API_KEY secret; running the eval against a local Qwen 2.5 3B model with Ollama."
+            {
+              echo "USE_OLLAMA=true"
+              echo "OPENAI_API_KEY=ollama"
+              echo "OPENAI_BASE_URL=http://localhost:11434/v1"
+              echo "OPENAI_MODEL=qwen2.5:3b"
+              echo "EVAL_GRADER=ollama:chat:qwen2.5:3b"
+              # Deterministic answers, and a wider tolerance for a small judge model.
+              echo "LLM_TEMPERATURE=0"
+              echo "EVAL_TOLERANCE=0.1"
+              # CPU inference: one request at a time.
+              echo "EVAL_ARGS=--repeat 1 --max-concurrency 1"
+            } >> "$GITHUB_ENV"
+          fi
+
+      - name: Start Ollama with the local model
+        if: env.USE_OLLAMA == 'true'
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://localhost:11434/api/version && break; sleep 2; done
+          ollama pull qwen2.5:3b
 
       - uses: actions/setup-node@v4
-        if: env.OPENAI_API_KEY != ''
         with:
-          node-version: "20"
+          node-version: "22"
 
       - uses: aws-actions/configure-aws-credentials@v4
-        if: env.OPENAI_API_KEY != '' && env.PUBLISH_TO_CLOUDWATCH == 'true'
+        if: env.PUBLISH_TO_CLOUDWATCH == 'true'
         with:
           role-to-assume: ${{ env.AWS_EVAL_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Install backend dependencies
-        if: env.OPENAI_API_KEY != ''
         working-directory: Backend/terraform_code/backend
         run: npm ci
 
-      - name: Run eval (3 repeats to average out model randomness)
-        if: env.OPENAI_API_KEY != ''
+      - name: Run eval
         run: |
           mkdir -p evals/results
           npx -y "promptfoo@${PROMPTFOO_VERSION}" eval \
             -c evals/promptfooconfig.yaml \
-            --repeat 3 --no-cache --no-table \
+            $EVAL_ARGS --no-cache --no-table \
             -o evals/results/latest.json
 
       - name: Compare with baseline
-        if: env.OPENAI_API_KEY != ''
         run: |
           if [ "$PUBLISH_TO_CLOUDWATCH" = "true" ]; then
             export EVAL_CLOUDWATCH_NAMESPACE="LLMEval/CaseAIAgent"
           fi
-          python3 evals/drift_check.py evals/results/latest.json
+          python3 evals/drift_check.py evals/results/latest.json --tolerance "${EVAL_TOLERANCE:-0.05}"
+
+      - name: Print a candidate baseline (first run only)
+        if: hashFiles('evals/baseline.json') == ''
+        run: |
+          python3 evals/drift_check.py evals/results/latest.json \
+            --update-baseline --baseline /tmp/baseline.json
+          echo "----- BEGIN CANDIDATE BASELINE -----"
+          cat /tmp/baseline.json
+          echo "----- END CANDIDATE BASELINE -----"
 
       - name: Upload results
-        if: always() && env.OPENAI_API_KEY != ''
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: llm-eval-results

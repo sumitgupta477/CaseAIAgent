@@ -25,9 +25,16 @@ async function analyze(openai, model, text) {
       { role: "user", content: text },
     ],
     max_tokens: 400,
+    // Unset in production (provider default). The eval sets LLM_TEMPERATURE=0
+    // for small local models so repeated runs are comparable.
+    ...(process.env.LLM_TEMPERATURE ? { temperature: Number(process.env.LLM_TEMPERATURE) } : {}),
   });
 
-  const parsed = JSON.parse(resp.choices[0].message.content);
+  const content = resp?.choices?.[0]?.message?.content;
+  if (typeof content !== "string") {
+    throw new Error(`Unexpected model response: ${JSON.stringify(resp).slice(0, 300)}`);
+  }
+  const parsed = JSON.parse(content);
   return {
     decision: {
       reply: String(parsed.reply || "").trim(),
